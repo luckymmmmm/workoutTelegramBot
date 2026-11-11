@@ -5,15 +5,16 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, selectinload
 from sqlalchemy import select, delete, ForeignKey
+from aiohttp import web
 
-load_dotenv("token.env")
+load_dotenv(".env")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+DB_URL = os.getenv("DB_URL", "sqlite+aiosqlite:///workouts.db")
 
-engine = create_async_engine("sqlite+aiosqlite:///workouts.db", echo=False)
+engine = create_async_engine(DB_URL, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 class Base(DeclarativeBase):
@@ -33,7 +34,6 @@ class Exercise(Base):
     name: Mapped[str]
     weight: Mapped[float] = mapped_column(nullable=True)
     reps: Mapped[int] = mapped_column(nullable=True)
-    
     day = relationship("WorkoutDay", back_populates="exercises")
 
 async def init_db():
@@ -60,7 +60,6 @@ async def show_main_menu(user_id: int, target):
 
     buttons = [[InlineKeyboardButton(text=day.name, callback_data=f"day_{day.id}")] for day in days]
     buttons.append([InlineKeyboardButton(text="➕ Додати тренування", callback_data="add_day")])
-    
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     text = "Головне меню. Обери тренування або створи нове:"
     
@@ -97,18 +96,13 @@ async def render_day_menu(day_id: int, target):
     buttons = []
     
     for ex in day.exercises:
-        if ex.weight is not None and ex.reps is not None:
-            res_text = f"{ex.weight}кг x {ex.reps}"
-        else:
-            res_text = "немає даних"
-            
+        res_text = f"{ex.weight}кг x {ex.reps}" if ex.weight is not None and ex.reps is not None else "немає даних"
         text += f"🔹 {ex.name}: {res_text}\n"
-        buttons.append([InlineKeyboardButton(text=f"{ex.name}", callback_data=f"ex_{ex.id}")])
+        buttons.append([InlineKeyboardButton(text=f"Відкрити: {ex.name}", callback_data=f"ex_{ex.id}")])
 
     buttons.append([InlineKeyboardButton(text="➕ Додати нову вправу", callback_data=f"add_ex_{day.id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад до меню", callback_data="back_main")])
     buttons.append([InlineKeyboardButton(text="🗑 Видалити день", callback_data=f"del_day_{day.id}")])
-    
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     if isinstance(target, CallbackQuery):
@@ -137,12 +131,10 @@ async def ask_ex_name(callback: CallbackQuery, state: FSMContext):
 async def save_ex_name(message: Message, state: FSMContext):
     data = await state.get_data()
     day_id = data['current_day_id']
-    
     async with AsyncSessionLocal() as session:
         new_ex = Exercise(day_id=day_id, name=message.text)
         session.add(new_ex)
         await session.commit()
-        
     await state.clear()
     await render_day_menu(day_id, message)
 
@@ -160,12 +152,12 @@ async def render_exercise_menu(ex_id: int, target):
         text += "Результатів ще немає.\n"
         
     buttons = [
-        [InlineKeyboardButton(text="🔄 Оновити результат (Вага Повтори)", callback_data=f"update_res_{ex.id}")],
+        [InlineKeyboardButton(text="🔄 Оновити результат", callback_data=f"update_res_{ex.id}")],
         [InlineKeyboardButton(text="🔙 Назад до тренування", callback_data=f"day_{ex.day_id}")],
         [InlineKeyboardButton(text="🗑 Видалити вправу", callback_data=f"del_ex_{ex.id}")]
     ]
-    
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     elif isinstance(target, Message):
@@ -187,7 +179,6 @@ async def ask_result_data(callback: CallbackQuery, state: FSMContext):
 async def save_result(message: Message, state: FSMContext):
     data = await state.get_data()
     ex_id = data['current_ex_id']
-
     try:
         w_str, r_str = message.text.split()
         weight, reps = float(w_str), int(r_str)
@@ -201,7 +192,6 @@ async def save_result(message: Message, state: FSMContext):
             ex.weight = weight
             ex.reps = reps
             await session.commit()
-
     await state.clear()
     await render_exercise_menu(ex_id, message)
 
@@ -221,11 +211,22 @@ async def delete_exercise(callback: CallbackQuery):
         day_id = ex.day_id
         await session.execute(delete(Exercise).where(Exercise.id == ex_id))
         await session.commit()
-        
     await render_day_menu(day_id, callback)
+
+async def health_check(request):
+    return web.Response(text="Bot is running!")
 
 async def main():
     await init_db()
+    
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
