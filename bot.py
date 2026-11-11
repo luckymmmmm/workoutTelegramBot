@@ -14,7 +14,10 @@ load_dotenv(".env")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_URL = os.getenv("DB_URL", "sqlite+aiosqlite:///workouts.db")
 
-engine = create_async_engine(DB_URL, echo=False)
+clean_db_url = DB_URL.split("?")[0] if DB_URL else "sqlite+aiosqlite:///workouts.db"
+connect_args = {"ssl": "require"} if "neon.tech" in DB_URL else {}
+
+engine = create_async_engine(clean_db_url, connect_args=connect_args, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 class Base(DeclarativeBase):
