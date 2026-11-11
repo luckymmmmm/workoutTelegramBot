@@ -1,0 +1,10 @@
+token.env
+
+venv/
+env/
+
+*.db
+workouts.db
+
+__pycache__/
+*.pyc
